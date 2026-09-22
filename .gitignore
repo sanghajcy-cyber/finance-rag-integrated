@@ -1,0 +1,38 @@
+# 환경변수 / 민감정보
+.env
+.env.local
+.env.prod
+*.key
+.key
+domain-rag-lab/.env.local
+domain-rag-lab/.env.prod
+investment-analysis/.env
+investment-analysis/.key
+investment-analysis/.env.local
+
+# AWS / 인증
+.aws/
+*.pem
+
+# Docker / 런타임 데이터
+**/data/uploads/
+**/data/processed/
+**/data/lean-workflows/
+investment-analysis/mongo-export-*/
+investment-analysis/pg-stock-data-*.sql
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그
+*.log

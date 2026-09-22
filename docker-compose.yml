@@ -1,0 +1,254 @@
+name: finance-rag-integrated
+
+services:
+  # ─────────────────────────────
+  # domain-rag-lab 서비스군 (rag-*)
+  # ─────────────────────────────
+  rag-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: ${RAG_POSTGRES_DB:-ragdb}
+      POSTGRES_USER: ${RAG_POSTGRES_USER:-raguser}
+      POSTGRES_PASSWORD: ${RAG_POSTGRES_PASSWORD:-ragpass}
+    ports:
+      - "15433:5432"
+    volumes:
+      - rag_postgres_data:/var/lib/postgresql/data
+      - ./domain-rag-lab/init.sql:/docker-entrypoint-initdb.d/01-enable-pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  rag-redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - rag_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  rag-qdrant:
+    image: qdrant/qdrant:v1.15.1
+    container_name: rag-qdrant
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - rag_qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  rag-api:
+    build: ./domain-rag-lab
+    container_name: rag-api
+    ports:
+      - "8100:8000"     # 기존 80 -> 8100 (Caddy가 앞단에서 경로 분기하므로 직접 접속용 포트만 변경)
+    env_file:
+      - ./domain-rag-lab/${APP_ENV_FILE:-.env.local}
+    environment:
+      POSTGRES_DB: ${RAG_POSTGRES_DB:-ragdb}
+      POSTGRES_USER: ${RAG_POSTGRES_USER:-raguser}
+      POSTGRES_PASSWORD: ${RAG_POSTGRES_PASSWORD:-ragpass}
+      POSTGRES_HOST: rag-postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: rag-redis
+      REDIS_PORT: 6379
+      QDRANT_HOST: rag-qdrant
+      QDRANT_PORT: 6333
+      LEAN_RUNNER: ${LEAN_RUNNER:-local}
+      LEAN_LOCAL_WORKDIR: /app/data/lean-workflows
+      LEAN_LOCAL_WORKDIR_HOST: ${LEAN_LOCAL_WORKDIR_HOST:-${PWD}/domain-rag-lab/data/lean-workflows}
+      LEAN_SSH_HOST: ${LEAN_SSH_HOST:-}
+      LEAN_SSH_USER: ${LEAN_SSH_USER:-ubuntu}
+      LEAN_SSH_KEY_PATH: ${LEAN_SSH_KEY_PATH:-}
+      LEAN_REMOTE_WORKDIR: ${LEAN_REMOTE_WORKDIR:-/home/ubuntu/lean-workflows}
+      LEAN_DOCKER_IMAGE: ${LEAN_DOCKER_IMAGE:-quantconnect/lean:latest}
+      LEAN_TIMEOUT_SECONDS: ${LEAN_TIMEOUT_SECONDS:-300}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./domain-rag-lab/app:/app/app
+      - ./domain-rag-lab/frontend:/app/frontend
+      - ./domain-rag-lab/data:/app/data
+      - ./shared:/app/shared          # 공통 GNB 마운트
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      rag-postgres:
+        condition: service_healthy
+      rag-redis:
+        condition: service_healthy
+      rag-qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  rag-streamlit:
+    build: ./domain-rag-lab
+    container_name: rag-streamlit
+    ports:
+      - "8290:8501"
+    env_file:
+      - ./domain-rag-lab/${APP_ENV_FILE:-.env.local}
+    environment:
+      API_BASE_URL: http://rag-api:8000
+    volumes:
+      - ./domain-rag-lab/streamlit_app.py:/app/streamlit_app.py:ro
+    depends_on:
+      rag-api:
+        condition: service_healthy
+    command: streamlit run /app/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    restart: unless-stopped
+
+  # ─────────────────────────────
+  # investment-analysis 서비스군 (invest-*)
+  # ─────────────────────────────
+  invest-mongo:
+    image: mongo:7
+    container_name: invest-mongo
+    restart: unless-stopped
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGODB_DB:-investment_db}
+    volumes:
+      - invest_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  invest-qdrant:
+    image: qdrant/qdrant:v1.13.4
+    container_name: invest-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - invest_qdrant_data:/qdrant/storage
+
+  invest-meilisearch:
+    image: getmeili/meilisearch:v1.15.2
+    container_name: invest-meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-local-development-search-key-change-me}
+    volumes:
+      - invest_meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:7700/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  invest-ollama:
+    image: ollama/ollama:latest
+    container_name: invest-ollama
+    restart: unless-stopped
+    volumes:
+      - invest_ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  invest-backend:
+    build:
+      context: ./investment-analysis
+      dockerfile: Dockerfile
+    container_name: invest-backend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      MONGODB_URL: mongodb://invest-mongo:27017
+      MONGODB_DB: ${MONGODB_DB:-investment_db}
+      QDRANT_URL: http://invest-qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-investment_docs}
+      MEILI_URL: http://invest-meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-local-development-search-key-change-me}
+      RAG_EMBEDDING_PROVIDER: ${RAG_EMBEDDING_PROVIDER:-ollama}
+      RAG_EMBEDDING_URL: http://invest-ollama:11434/api/embed
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-embeddinggemma}
+      RAG_EMBEDDING_TIMEOUT_SECONDS: ${RAG_EMBEDDING_TIMEOUT_SECONDS:-180}
+      RAG_LLM_BASE_URL: http://invest-ollama:11434/v1
+      RAG_LLM_API_KEY: ${RAG_LLM_API_KEY:-ollama}
+      RAG_LLM_MODEL: ${RAG_LLM_MODEL:-qwen3:8b}
+      RAG_LLM_TIMEOUT_SECONDS: ${RAG_LLM_TIMEOUT_SECONDS:-180}
+      DART_API_KEY: ${DART_API_KEY:-}
+      KOSIS_API_KEY: ${KOSIS_API_KEY:-}
+      BOK_API_KEY: ${BOK_API_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+      LEX_BOT_ID: ${LEX_BOT_ID:-}
+      LEX_BOT_ALIAS_ID: ${LEX_BOT_ALIAS_ID:-}
+      LEX_LOCALE_ID: ${LEX_LOCALE_ID:-ko_KR}
+      AWS_PROFILE: ${AWS_PROFILE:-investment-analysis-lex}
+      KRX_KEY_FILE: /run/secrets/krx.key
+    volumes:
+      - ./investment-analysis/docs:/app/docs:ro
+      - ./investment-analysis/.key:/run/secrets/krx.key:ro
+      - ${AWS_SHARED_CREDENTIALS_DIR:-/root/.aws}:/root/.aws:ro
+      - ./shared:/app/shared          # 공통 GNB 마운트
+    depends_on:
+      invest-mongo:
+        condition: service_healthy
+      invest-qdrant:
+        condition: service_started
+      invest-meilisearch:
+        condition: service_healthy
+      invest-ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ─────────────────────────────
+  # 통합 리버스 프록시
+  # ─────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: integration-caddy
+    restart: unless-stopped
+    ports:
+      - "8888:80"     # 로컬 통합 진입점: http://localhost:8888
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - rag-api
+      - invest-backend
+
+volumes:
+  rag_postgres_data:
+  rag_redis_data:
+  rag_qdrant_data:
+  invest_mongo_data:
+  invest_qdrant_data:
+  invest_ollama_data:
+  invest_meilisearch_data:

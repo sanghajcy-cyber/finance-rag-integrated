@@ -1,0 +1,22 @@
+:80 {
+    encode zstd gzip
+
+    # 투자 분석 서비스 (경로: /invest/*)
+    handle_path /invest/* {
+        reverse_proxy invest-backend:8000
+    }
+
+    # RAG 학습 서비스 (경로: /rag/*)
+    handle_path /rag/* {
+        reverse_proxy rag-api:8000
+    }
+
+    # 루트 접속 시 기본으로 RAG 화면으로 이동
+    handle / {
+        redir /rag/ 302
+    }
+
+    handle {
+        reverse_proxy rag-api:8000
+    }
+}
