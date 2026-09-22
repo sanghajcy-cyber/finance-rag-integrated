@@ -237,7 +237,7 @@ services:
     container_name: integration-caddy
     restart: unless-stopped
     ports:
-      - "8888:80"     # 로컬 통합 진입점: http://localhost:8888
+      - "80:80"     # 로컬 통합 진입점: http://localhost:8888
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
