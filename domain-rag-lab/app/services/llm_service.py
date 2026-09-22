@@ -110,7 +110,7 @@ class LLMService:
         }
 
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=240.0) as client:
                 response = client.post(
                     f"{self.base_url}/chat/completions",
                     json=payload,
@@ -152,7 +152,7 @@ class LLMService:
         }
 
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=240.0) as client:
                 response = client.post(
                     f"{self.base_url}/chat/completions",
                     json=payload,
